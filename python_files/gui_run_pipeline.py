@@ -435,6 +435,10 @@ class PipelineGUI(tk.Tk):
             self._set_run_button_state(enabled=True)
 
 
-if __name__ == "__main__":
+def run_app():
     app = PipelineGUI()
     app.mainloop()
+
+
+if __name__ == "__main__":
+    run_app()
