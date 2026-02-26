@@ -26,14 +26,14 @@ import json
 import threadpoolctl
 
 # Project classes composing the analysis pipeline.
-from TriggerClass import Trigger
-from TimestampsClass import TimestampsParameters
-from SorterClass import Sorter
-from ProtocolClass import Protocol
-from IntanClass import IntanFile
-from ProbeClass import Probe
-from PipelineClass import Pipeline
-from PDFGeneratorClass import PDFGenerator
+from trigger_class import Trigger
+from timestamps_class import TimestampsParameters
+from sorter_class import Sorter
+from protocol_class import Protocol
+from intan_class import IntanFile
+from probe_class import Probe
+from pipeline_class import Pipeline
+from pdf_generator_class import PDFGenerator
 
 
 

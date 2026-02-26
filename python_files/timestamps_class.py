@@ -9,7 +9,7 @@ class TimestampsParameters:
     """
     Configuration object for trigger timestamp extraction.
 
-    This class groups all parameters needed by IntanClass methods that detect
+    This class groups all parameters needed by IntanFile methods that detect
     trigger events from a signal:
       - trigger: Trigger object (threshold, edge, min_interval),
       - trigger_channel_index: index of the channel used for detection.

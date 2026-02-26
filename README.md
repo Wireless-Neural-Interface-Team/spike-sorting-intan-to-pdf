@@ -5,4 +5,4 @@ Spike sorting with spikeinterface 103.2 -  Output a pdf files summarizing the an
 Install spike interface beforehand : https://github.com/SpikeInterface/spikeinterface.
 Use the virtual environment created.
 
-The main program is GUI_Run_Pipeline.py. 
+The main program is gui_run_pipeline.py. 

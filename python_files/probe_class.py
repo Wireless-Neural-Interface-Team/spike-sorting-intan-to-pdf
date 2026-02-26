@@ -16,7 +16,7 @@ class Probe:
       - the path to the probe description file,
       - a dataframe representation of probe contacts/metadata.
 
-    The dataframe is later filtered/reordered in IntanClass.associate_probe(...)
+    The dataframe is later filtered/reordered in IntanFile.associate_probe(...)
     to match the channels present in the loaded recording.
     """
 

@@ -7,7 +7,7 @@ Created on Fri Feb  6 10:16:39 2026
 import numpy as np
 import spikeinterface.extractors as se
 import probeinterface as ProbeI
-from ProbeClass import Probe
+from probe_class import Probe
 import spikeinterface.preprocessing as spre
 
 
