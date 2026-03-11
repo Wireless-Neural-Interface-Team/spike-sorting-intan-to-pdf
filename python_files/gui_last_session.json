@@ -1,5 +1,5 @@
 {
-  "folder_path": "C:/Users/WNIlabs/Documents/Pierre/Electrophy/Recordings/Micka\u00ebl/20251205 - BlueLEDStim_5sON_20s_interStim_RetinaP8_retina3_251205_165648_251205_170112",
+  "folder_path": "",
   "use_trigger": true,
   "trigger_type": "electric",
   "trigger_threshold": "37000",
@@ -7,7 +7,7 @@
   "trigger_min_interval": "5.1",
   "trigger_channel_index": "0",
   "sorter_name": "tridesclous2",
-  "my_probe_path": "C:/Spikesorting_utilities/MEA_RdLGN64.json",
+  "my_probe_path": "",
   "protocol_params": {
     "preprocessing": {
       "bandpass_filter": {
@@ -44,6 +44,14 @@
         "include_multi_channel_metrics": false
       },
       "quality_metrics": {}
+    },
+    "sorter_params": {
+      "tridesclous2": {
+        "apply_motion_correction": "",
+        "apply_preprocessing": "",
+        "debug": "",
+        "save_array": ""
+      }
     }
   }
 }
