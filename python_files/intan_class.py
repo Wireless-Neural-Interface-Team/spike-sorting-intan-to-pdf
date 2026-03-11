@@ -11,6 +11,24 @@ from probe_class import Probe
 import spikeinterface.preprocessing as spre
 
 
+def load_channel_ids_only(folder_path):
+    """
+    Lightweight load: only the amplifier stream, to get channel_ids.
+    Avoids loading Stim and ADC streams. Returns list of channel IDs or None on error.
+    """
+    try:
+        rec = se.read_split_intan_files(
+            folder_path,
+            mode="concatenate",
+            stream_name="RHS2000 amplifier channel",
+            use_names_as_ids=False,
+            all_annotations=True,
+        )
+        return list(rec.get_channel_ids())
+    except Exception:
+        return None
+
+
 class IntanFile:
     """
     Container class for one Intan recording folder and derived objects.

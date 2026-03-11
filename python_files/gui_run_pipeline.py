@@ -23,6 +23,7 @@ import threading
 import traceback
 import multiprocessing
 from queue import Empty
+from collections import defaultdict
 
 # Constantes réutilisables
 JSON_FILTER = "JSON files (*.json);;All files (*.*)"
@@ -51,18 +52,37 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QSpinBox,
     QScrollArea,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
 )
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal, QObject, QThread
 from PySide6.QtGui import QAction
 
 from trigger_class import Trigger
 from timestamps_class import TimestampsParameters
 from sorter_class import Sorter
 from protocol_class import default_protocol_params
-from intan_class import IntanFile
+from intan_class import IntanFile, load_channel_ids_only
 from probe_class import Probe
 from pipeline_class import Pipeline
 from pdf_generator_class import PDFGenerator
+
+
+class _ChannelsLoaderWorker(QObject):
+    """Worker that loads channel IDs in a background thread."""
+    finished = Signal(str, object)  # (folder_path, channel_ids or None)
+
+    def __init__(self, folder_path):
+        super().__init__()
+        self._folder_path = folder_path
+
+    def run(self):
+        try:
+            ch_ids = load_channel_ids_only(self._folder_path)
+            self.finished.emit(self._folder_path, ch_ids)
+        except Exception:
+            self.finished.emit(self._folder_path, None)
 
 
 class PipelineGUI(QMainWindow):
@@ -79,6 +99,9 @@ class PipelineGUI(QMainWindow):
 
         # Form field values (we use QLineEdit.text() etc. directly, no StringVar)
         self._trigger_widgets = []
+        self._channels_load_thread = None
+        self._channels_load_worker = None
+        self._channels_debounce_timer = None
         self._stop_requested = False
         # Pipeline runs in a subprocess for immediate stop capability
         self._pipeline_process = None  # multiprocessing.Process instance
@@ -125,10 +148,21 @@ class PipelineGUI(QMainWindow):
         left_layout.addWidget(QLabel("Intan files folder path"), r, 0)
         self.folder_edit = QLineEdit()
         self.folder_edit.setMinimumWidth(400)
+        self.folder_edit.editingFinished.connect(self._schedule_refresh_channels)
         left_layout.addWidget(self.folder_edit, r, 1)
         self._folder_btn = QPushButton("Browse")
-        self._folder_btn.clicked.connect(lambda: self._browse_path("folder", self.folder_edit))
+        self._folder_btn.clicked.connect(self._on_folder_browse)
         left_layout.addWidget(self._folder_btn, r, 2)
+        r += 1
+
+        left_layout.addWidget(QLabel("Channels in file"), r, 0)
+        self.channels_display = QTableWidget()
+        self.channels_display.setMaximumWidth(280)
+        self.channels_display.setMinimumHeight(280)
+        self.channels_display.setMaximumHeight(400)
+        self.channels_display.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.channels_display.verticalHeader().setVisible(False)
+        left_layout.addWidget(self.channels_display, r, 1, 1, 2)
         r += 1
 
         left_layout.addWidget(QLabel("Probe file path (.json)"), r, 0)
@@ -371,6 +405,7 @@ class PipelineGUI(QMainWindow):
         # Widgets to disable when pipeline is running
         self._form_widgets = [
             self._file_btn, self.folder_edit, self._folder_btn,
+            self.channels_display,
             self.probe_edit, self._probe_btn, self.sorter_edit,
             *self._get_protocol_form_widgets(),
             self._protocol_load_btn, self._protocol_reset_btn,
@@ -453,6 +488,7 @@ class PipelineGUI(QMainWindow):
             self.protocol_freq_min.setValue(float(state.get("protocol_freq_min", 400)))
             self.protocol_freq_max.setValue(float(state.get("protocol_freq_max", 5000)))
             self._update_protocol_from_form()
+        self._refresh_intan_channels()
 
     def _load_last_session(self):
         if not os.path.isfile(self._session_file):
@@ -487,6 +523,74 @@ class PipelineGUI(QMainWindow):
     def closeEvent(self, event):
         self._save_last_session()
         event.accept()
+
+    def _on_folder_browse(self):
+        self._browse_path("folder", self.folder_edit)
+        self._refresh_intan_channels()
+
+    def _schedule_refresh_channels(self):
+        """Debounce: delay channel load to avoid repeated loads while typing."""
+        if self._channels_debounce_timer is not None:
+            self._channels_debounce_timer.stop()
+        self._channels_debounce_timer = QTimer(self)
+        self._channels_debounce_timer.setSingleShot(True)
+        self._channels_debounce_timer.timeout.connect(self._refresh_intan_channels)
+        self._channels_debounce_timer.start(400)
+
+    def _refresh_intan_channels(self):
+        """Start background load of channel IDs (non-blocking)."""
+        folder_path = self.folder_edit.text().strip()
+        self._populate_channels_table([])
+        if not folder_path or not os.path.isdir(folder_path):
+            return
+        self._populate_channels_table(None)  # show "Loading..."
+        worker = _ChannelsLoaderWorker(folder_path)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_channels_loaded)
+        worker.finished.connect(thread.quit)
+        thread.start()
+        self._channels_load_thread = thread
+        self._channels_load_worker = worker
+
+    def _on_channels_loaded(self, folder_path, channel_ids):
+        """Called when channel load completes (on main thread). Ignore stale results."""
+        if folder_path != self.folder_edit.text().strip():
+            return
+        self._populate_channels_table(channel_ids)
+
+    def _populate_channels_table(self, channel_ids):
+        """Fill the channels table. channel_ids=None -> show 'Loading...', [] -> clear."""
+        self.channels_display.setRowCount(0)
+        self.channels_display.setColumnCount(0)
+        if channel_ids is None:
+            self.channels_display.setRowCount(1)
+            self.channels_display.setColumnCount(1)
+            item = QTableWidgetItem("Loading...")
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.channels_display.setItem(0, 0, item)
+            return
+        if not channel_ids:
+            return
+        by_letter = defaultdict(list)
+        for ch in channel_ids:
+            s = str(ch)
+            letter = s[0].upper() if s and s[0].isalpha() else "#"
+            by_letter[letter].append(s)
+        letters = sorted((k for k in by_letter if k != "#"), key=str) + (["#"] if "#" in by_letter else [])
+        for k in letters:
+            by_letter[k].sort(key=lambda x: (len(x), x))
+        n_cols = len(letters)
+        n_rows = max(len(by_letter[k]) for k in letters) if letters else 0
+        self.channels_display.setColumnCount(n_cols)
+        self.channels_display.setRowCount(n_rows)
+        self.channels_display.setHorizontalHeaderLabels(letters)
+        for col, letter in enumerate(letters):
+            for row, ch_id in enumerate(by_letter[letter]):
+                item = QTableWidgetItem(ch_id)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.channels_display.setItem(row, col, item)
 
     def _browse_path(self, mode, target_edit, filter_ext=None):
         if mode == "folder":
