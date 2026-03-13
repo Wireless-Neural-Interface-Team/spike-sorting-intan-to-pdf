@@ -28,10 +28,10 @@ def load_channel_ids_only(folder_path):
         file_list.sort(key=lambda x: x.name)
         first_file = file_list[0]
         rec = se.read_intan(
-            first_file,
+            str(first_file),
             stream_name="RHS2000 amplifier channel",
             use_names_as_ids=False,
-            all_annotations=True,
+            all_annotations=False,  # Skip extra annotations; only channel_ids needed
         )
         return list(rec.get_channel_ids())
     except Exception:

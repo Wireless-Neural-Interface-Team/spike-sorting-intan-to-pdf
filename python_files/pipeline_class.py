@@ -12,17 +12,7 @@ import spikeinterface.sorters as ss
 import spikeinterface.curation as scur
 import spikeinterface.preprocessing as spre
 import spikeinterface as si
-from spikeinterface.core.job_tools import fix_job_kwargs, get_best_job_kwargs
-
-
-def _get_pipeline_job_kwargs():
-    """Job kwargs for pipeline: native get_best_job_kwargs + overrides."""
-    try:
-        job_kwargs = get_best_job_kwargs()
-        job_kwargs.update(chunk_memory="100M", progress_bar=True)
-        return job_kwargs
-    except Exception:
-        return {"n_jobs": -1, "chunk_memory": "100M", "progress_bar": True}
+from spikeinterface.core.job_tools import fix_job_kwargs
 
 
 def _sanitize_sorter_params(sorter_name, params):
@@ -87,16 +77,7 @@ class Pipeline:
         self._output_analyzer_folder = os.path.join(folder_path, f"Analyzer_binary_pipeline_{sorter.name}")
         # Update preprocessing settings, then run the full pipeline immediately.
         self.__remove_artifacts()
-        self.__apply_job_kwargs()
         self.__pipeline_sorter_analyzer()
-    
-    def __apply_job_kwargs(self):
-        """Apply job_kwargs using SpikeInterface's get_best_job_kwargs()."""
-        try:
-            job_kwargs = fix_job_kwargs(_get_pipeline_job_kwargs())
-            si.set_global_job_kwargs(**job_kwargs)
-        except Exception:
-            pass
 
     def __remove_artifacts(self):
         """
@@ -164,15 +145,9 @@ class Pipeline:
         self._rhs_files._pre_processed_recording = rec
 
         # 3) Run sorter with the same recording object.
+        # Use sorter params from protocol (user-editable job_kwargs, etc.) - no forced pipeline override.
         sorter_params = copy.deepcopy(self._protocol_params.get("sorter_params", {}).get(self._sorter.name, {}))
         sorter_params = _sanitize_sorter_params(self._sorter.name, sorter_params)
-        job_kwargs = _get_pipeline_job_kwargs()
-        try:
-            default_params = ss.get_default_sorter_params(self._sorter.name)
-            if "job_kwargs" in default_params:
-                sorter_params.setdefault("job_kwargs", {}).update(job_kwargs)
-        except Exception:
-            pass
         sorting_results = ss.run_sorter(
             sorter_name=self._sorter.name,
             recording=rec,
@@ -199,6 +174,9 @@ class Pipeline:
                 ) from exc
             raise
         # 6) Compute postprocessing extensions and keep analyzer for plotting/PDF.
-        job_kwargs = _get_pipeline_job_kwargs()
+        try:
+            job_kwargs = fix_job_kwargs({"progress_bar": True})
+        except Exception:
+            job_kwargs = {"progress_bar": True}
         analyzer_result.compute(self._protocol_params['postprocessing'], **job_kwargs)
         self._rhs_files._computed_analyzer_result = analyzer_result

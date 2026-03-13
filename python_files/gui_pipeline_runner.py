@@ -47,16 +47,14 @@ def run_pipeline_in_process(params, log_queue):
         use_trigger = params.get("use_trigger", False)
         preprocessing = protocol_params.get("preprocessing", {}) if isinstance(protocol_params, dict) else {}
 
-        _log(f"folder_path: {folder_path}")
-        _log(f"output_folder: {output_folder}")
-        _log(f"sorter_name: {sorter_name}")
-        _log(
-            "preprocessing steps: "
-            + ", ".join(preprocessing.keys())
-            + (" | unsigned_to_signed=ON" if "unsigned_to_signed" in preprocessing else " | unsigned_to_signed=OFF")
-        )
+        _log(f"[1/5] Dossier Intan: {folder_path}")
+        _log(f"[2/5] Dossier de sortie: {output_folder}")
+        _log(f"[3/5] Sorter: {sorter_name}")
+        _log(f"[4/5] Étapes preprocessing: {', '.join(preprocessing.keys()) or '(aucune)'}")
 
+        _log("Chargement des fichiers Intan...")
         rhs_files = IntanFile(folder_path)
+        _log(f"  → {rhs_files.number_of_channels} canaux détectés")
 
         if use_trigger:
             trigger = Trigger(
@@ -69,22 +67,27 @@ def run_pipeline_in_process(params, log_queue):
                 trigger_channel_index=params["trigger_channel_index"],
                 trigger_type=params.get("trigger_type", "electric"),
             )
-            _log("Generating trigger timestamps...")
+            _log("Génération des timestamps trigger...")
             rhs_files.generate_trigger_timestamps(ts_params)
+            _log(f"  → {len(rhs_files.trigger_timestamps)} triggers détectés")
 
-        _log("Associating probe...")
+        _log("Association de la sonde...")
         my_probe_df = Probe(my_probe_path)
         rhs_files.associate_probe(my_probe_df)
+        _log("  → Sonde associée")
 
-        _log("Running sorter + analyzer (this can take time)...")
+        _log("[5/5] Exécution du sorter + analyseur (peut prendre plusieurs minutes)...")
         _progress(True)
         sorter = Sorter(sorter_name)
         pipeline = Pipeline(sorter, output_folder, protocol_params, rhs_files)
+        _log("  → Tri terminé")
 
-        _log("Generating PDF report...")
+        _log("Génération du rapport PDF...")
         PDFGenerator(output_folder, pipeline)
         pdf_path = os.path.join(output_folder, f"Summary_figures_sorting_{sorter_name}.pdf")
-        _log(f"PDF generated: {pdf_path}")
+        _log(f"  → PDF généré: {pdf_path}")
+        _log("")
+        _log("=== Pipeline terminé avec succès ===")
 
         _progress(False)
         log_queue.put(("done", "success", output_folder))
