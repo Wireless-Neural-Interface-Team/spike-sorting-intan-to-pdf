@@ -44,14 +44,6 @@
         "include_multi_channel_metrics": false
       },
       "quality_metrics": {}
-    },
-    "sorter_params": {
-      "tridesclous2": {
-        "apply_motion_correction": "",
-        "apply_preprocessing": "",
-        "debug": "",
-        "save_array": ""
-      }
     }
   }
 }

@@ -18,6 +18,8 @@ import os
 import json
 import time
 import copy
+import subprocess
+import sys
 from datetime import datetime
 import ctypes
 import threading
@@ -71,17 +73,11 @@ from PySide6.QtGui import QAction
 from protocol_class import default_protocol_params
 
 try:
-    from spikeinterface.sorters import (
-        available_sorters,
-        get_default_sorter_params,
-        get_sorter_params_description,
-    )
+    from spikeinterface.sorters import available_sorters
     SORTERS_AVAILABLE = True
 except ImportError:
     SORTERS_AVAILABLE = False
     available_sorters = lambda: ["tridesclous2"]
-    get_default_sorter_params = lambda n: {}
-    get_sorter_params_description = lambda n: {}
 
 
 class PipelineGUI(QMainWindow):
@@ -107,6 +103,8 @@ class PipelineGUI(QMainWindow):
         self._mea_editor_sync_timer = None
         self._probe_path = ""
         self._stop_requested = False
+        self._has_successful_pipeline = False
+        self._last_success_results_path = None
         # Pipeline runs in a subprocess for immediate stop capability
         self._pipeline_process = None  # multiprocessing.Process instance
         self._log_queue = None  # multiprocessing.Queue for log messages from child
@@ -393,32 +391,11 @@ class PipelineGUI(QMainWindow):
         protocol_btns.addStretch()
         protocol_main.addLayout(protocol_btns)
 
-        # Sorter parameters (dynamic, adapts to selected sorter)
-        self.sorter_params_group = QGroupBox("Sorter parameters")
-        self.sorter_params_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-        sorter_params_outer = QVBoxLayout(self.sorter_params_group)
-        self.sorter_params_scroll = QScrollArea()
-        self.sorter_params_scroll.setWidgetResizable(True)
-        self.sorter_params_scroll.setMaximumHeight(220)
-        self.sorter_params_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.sorter_params_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.sorter_params_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.sorter_params_container = QWidget()
-        self.sorter_params_layout = QGridLayout(self.sorter_params_container)
-        self.sorter_params_layout.setColumnStretch(1, 1)
-        self.sorter_params_scroll.setWidget(self.sorter_params_container)
-        sorter_params_outer.addWidget(self.sorter_params_scroll)
-        self._sorter_param_widgets = {}
-        self.sorter_params_reset_btn = QPushButton("Reset sorter params to defaults")
-        self.sorter_params_reset_btn.clicked.connect(self._reset_sorter_params_to_defaults)
-        sorter_params_outer.addWidget(self.sorter_params_reset_btn)
-        protocol_main.addWidget(self.sorter_params_group)
         protocol_container_layout.addWidget(protocol_content)
         content.addWidget(protocol_container)
         content.addWidget(trigger_group)
         main_layout.addLayout(content)
         self._update_protocol_from_form()  # Sync initial form values to dict
-        self._rebuild_sorter_params_ui()  # Build sorter params for initial sorter
 
         # Run / Stop controls
         controls = QHBoxLayout()
@@ -435,6 +412,11 @@ class PipelineGUI(QMainWindow):
         self._clear_logs_btn.setFixedWidth(150)
         self._clear_logs_btn.clicked.connect(self._clear_logs)
         controls.addWidget(self._clear_logs_btn)
+        self._launch_sigui_btn = QPushButton("Launch spikeinterface-gui")
+        self._launch_sigui_btn.setFixedWidth(210)
+        self._launch_sigui_btn.setEnabled(False)
+        self._launch_sigui_btn.clicked.connect(self._launch_spikeinterface_gui)
+        controls.addWidget(self._launch_sigui_btn)
         controls.addStretch()
         main_layout.addLayout(controls)
 
@@ -454,7 +436,6 @@ class PipelineGUI(QMainWindow):
             self.probe_name_display, self._probe_edit_btn, self.sorter_combo,
             *self._get_protocol_form_widgets(),
             self._protocol_load_btn, self._protocol_reset_btn,
-            self.sorter_params_group, self.sorter_params_reset_btn,
             self.use_trigger_cb, self.rb_led, self.rb_electric,
             self.trigger_threshold_edit, self.polarity_combo,
             self.trigger_interval_edit, self.trigger_channel_edit,
@@ -486,123 +467,7 @@ class PipelineGUI(QMainWindow):
         self.sorter_combo.blockSignals(False)
 
     def _on_sorter_changed(self):
-        """When sorter selection changes, save current params and rebuild UI for new sorter."""
-        self._update_sorter_params_from_form()
-        self._rebuild_sorter_params_ui()
-        self._save_last_session()
-
-    def _rebuild_sorter_params_ui(self):
-        """Rebuild the sorter parameters section for the currently selected sorter."""
-        sorter_name = self.sorter_combo.currentText().strip()
-        if not sorter_name:
-            return
-        # Clear existing widgets
-        for w in list(self._sorter_param_widgets.values()):
-            w.setParent(None)
-        self._sorter_param_widgets.clear()
-        if not SORTERS_AVAILABLE:
-            return
-        try:
-            params = get_default_sorter_params(sorter_name)
-            descriptions = get_sorter_params_description(sorter_name)
-        except Exception:
-            params = {}
-            descriptions = {}
-        # Restore saved values for this sorter
-        saved = self._protocol_params.get("sorter_params", {}).get(sorter_name, {})
-        row = 0
-        for key in sorted(params.keys()):
-            val = saved.get(key, params[key])
-            desc = descriptions.get(key, "")
-            if isinstance(val, dict):
-                continue
-            if isinstance(val, list) and val and not isinstance(val[0], (int, float, str, bool)):
-                continue
-            label = QLabel(key)
-            label.setToolTip(desc)
-            if isinstance(val, bool):
-                w = QCheckBox()
-                w.setChecked(val)
-                w.toggled.connect(self._update_sorter_params_from_form)
-            elif isinstance(val, int):
-                w = QSpinBox()
-                w.setRange(-999999, 999999)
-                w.setValue(val)
-                w.valueChanged.connect(self._update_sorter_params_from_form)
-            elif isinstance(val, float):
-                w = QDoubleSpinBox()
-                w.setRange(-1e9, 1e9)
-                w.setDecimals(4)
-                w.setValue(val)
-                w.valueChanged.connect(self._update_sorter_params_from_form)
-            elif isinstance(val, str):
-                w = QLineEdit()
-                w.setText(val)
-                w.textChanged.connect(self._update_sorter_params_from_form)
-            elif isinstance(val, list):
-                w = QLineEdit()
-                w.setText(json.dumps(val))
-                w.textChanged.connect(self._update_sorter_params_from_form)
-            else:
-                w = QLineEdit()
-                w.setText(str(val))
-                w.textChanged.connect(self._update_sorter_params_from_form)
-            w.setMaximumWidth(180)
-            self.sorter_params_layout.addWidget(label, row, 0)
-            self.sorter_params_layout.addWidget(w, row, 1)
-            self._sorter_param_widgets[key] = w
-            row += 1
-
-    def _update_sorter_params_from_form(self):
-        """Read sorter param widgets and store in protocol_params."""
-        sorter_name = self.sorter_combo.currentText().strip()
-        if not sorter_name:
-            return
-        if not SORTERS_AVAILABLE:
-            return
-        try:
-            defaults = get_default_sorter_params(sorter_name)
-        except Exception:
-            defaults = {}
-        self._protocol_params.setdefault("sorter_params", {})
-        self._protocol_params["sorter_params"].setdefault(sorter_name, {})
-        for key, w in self._sorter_param_widgets.items():
-            default_val = defaults.get(key)
-            if isinstance(default_val, bool):
-                val = w.isChecked()
-            elif isinstance(default_val, int):
-                val = w.value()
-            elif isinstance(default_val, float):
-                val = w.value()
-            elif isinstance(default_val, list):
-                try:
-                    val = json.loads(w.text())
-                except (json.JSONDecodeError, TypeError):
-                    val = default_val
-            else:
-                txt = w.text()
-                if isinstance(default_val, (int, float)):
-                    try:
-                        val = int(txt) if isinstance(default_val, int) else float(txt)
-                    except (ValueError, TypeError):
-                        val = default_val
-                else:
-                    val = txt
-            self._protocol_params["sorter_params"][sorter_name][key] = val
-        self._save_last_session()
-
-    def _reset_sorter_params_to_defaults(self):
-        """Reset sorter params to SpikeInterface defaults for current sorter."""
-        sorter_name = self.sorter_combo.currentText().strip()
-        if not sorter_name or not SORTERS_AVAILABLE:
-            return
-        try:
-            defaults = get_default_sorter_params(sorter_name)
-        except Exception:
-            return
-        self._protocol_params.setdefault("sorter_params", {})
-        self._protocol_params["sorter_params"][sorter_name] = copy.deepcopy(defaults)
-        self._rebuild_sorter_params_ui()
+        """When sorter selection changes, persist session only."""
         self._save_last_session()
 
     def _on_trigger_type_change(self):
@@ -628,7 +493,6 @@ class PipelineGUI(QMainWindow):
 
     def _collect_form_state(self):
         """Collect all form values for save/load settings."""
-        self._update_sorter_params_from_form()
         state = {
             "folder_path": self.folder_edit.text(),
             "use_trigger": self.use_trigger_cb.isChecked(),
@@ -669,9 +533,11 @@ class PipelineGUI(QMainWindow):
         self._on_probe_path_changed()
         protocol_params = state.get("protocol_params")
         if isinstance(protocol_params, dict):
-            self._protocol_params = copy.deepcopy(protocol_params)
-            self._apply_protocol_to_form(protocol_params)
-            self._rebuild_sorter_params_ui()
+            # Ignore any legacy/custom sorter params to keep sorter defaults untouched.
+            sanitized_protocol = copy.deepcopy(protocol_params)
+            sanitized_protocol.pop("sorter_params", None)
+            self._protocol_params = sanitized_protocol
+            self._apply_protocol_to_form(sanitized_protocol)
         if state.get("protocol_freq_min") is not None or state.get("protocol_freq_max") is not None:
             self.protocol_freq_min.setValue(float(state.get("protocol_freq_min", 400)))
             self.protocol_freq_max.setValue(float(state.get("protocol_freq_max", 5000)))
@@ -969,9 +835,10 @@ class PipelineGUI(QMainWindow):
                 raise ValueError("File must contain a JSON object.")
             if "preprocessing" not in parsed or "postprocessing" not in parsed:
                 raise ValueError("Protocol must contain 'preprocessing' and 'postprocessing' keys.")
+            # Ignore any legacy/custom sorter params to keep sorter defaults untouched.
+            parsed.pop("sorter_params", None)
             self._protocol_params = copy.deepcopy(parsed)
             self._apply_protocol_to_form(parsed)
-            self._rebuild_sorter_params_ui()
             self._save_last_session()
             QMessageBox.information(self, "Protocol loaded", f"Protocol loaded from:\n{path}")
         except json.JSONDecodeError as e:
@@ -983,11 +850,54 @@ class PipelineGUI(QMainWindow):
         default = default_protocol_params(400, 5000)
         self._protocol_params = copy.deepcopy(default)
         self._apply_protocol_to_form(default)
-        self._reset_sorter_params_to_defaults()
         self._save_last_session()
 
     def _clear_logs(self):
         self.logs.clear()
+
+    def _get_spikeinterface_results_path(self, output_folder):
+        """Resolve best results path for spikeinterface-gui from an output folder."""
+        if not output_folder or not os.path.isdir(output_folder):
+            return None
+        sorter_name = self.sorter_combo.currentText().strip()
+        analyzer_dir = os.path.join(output_folder, f"Analyzer_binary_pipeline_{sorter_name}")
+        if os.path.isdir(analyzer_dir):
+            return analyzer_dir
+        sorting_dir = os.path.join(output_folder, f"Sorting_pipeline_{sorter_name}")
+        if os.path.isdir(sorting_dir):
+            return sorting_dir
+        return output_folder
+
+    def _launch_spikeinterface_gui(self, results_path=None):
+        """Launch spikeinterface-gui in a separate process."""
+        target_path = results_path or self._last_success_results_path
+        if not target_path:
+            self._show_info(
+                "SpikeInterface GUI",
+                "No successful pipeline result available yet. Run a complete pipeline first.",
+            )
+            return
+        launch_attempts = [
+            ["spikeinterface-gui", target_path],
+            [sys.executable, "-m", "spikeinterface_gui", target_path],
+        ]
+        errors = []
+        for command in launch_attempts:
+            try:
+                subprocess.Popen(command)
+                self._log(f"Started: {' '.join(command)}")
+                return
+            except FileNotFoundError as exc:
+                errors.append(str(exc))
+            except Exception as exc:
+                errors.append(str(exc))
+        self._show_error(
+            "Unable to launch spikeinterface-gui",
+            "Could not start spikeinterface-gui.\n"
+            "Install it in the current environment with:\n"
+            "pip install spikeinterface-gui\n\n"
+            f"Details:\n{errors[-1] if errors else 'Unknown launch error.'}",
+        )
 
     def _set_run_button_state(self, enabled):
         """Enable Run when idle, enable Stop when pipeline is running."""
@@ -998,6 +908,7 @@ class PipelineGUI(QMainWindow):
         """Enable/disable all form fields. Disabled when pipeline is running."""
         for w in self._form_widgets:
             w.setEnabled(enabled)
+        self._launch_sigui_btn.setEnabled(enabled and self._has_successful_pipeline)
         if enabled:
             self._toggle_trigger_fields_state()  # Restore trigger fields state
 
@@ -1088,6 +999,8 @@ class PipelineGUI(QMainWindow):
             self._show_error("Erreur de génération PDF", err_msg)
 
     def _on_pipeline_success(self, folder_path):
+        self._has_successful_pipeline = True
+        self._last_success_results_path = self._get_spikeinterface_results_path(folder_path)
         self._reset_pipeline_state()
         QApplication.processEvents()
         self._log("Pipeline completed successfully.")
@@ -1096,6 +1009,8 @@ class PipelineGUI(QMainWindow):
             self._open_output_folder(folder_path)
         except Exception:
             pass
+        self._log("Opening spikeinterface-gui with latest results...")
+        self._launch_spikeinterface_gui(self._last_success_results_path)
 
     def _is_pdf_file_in_use(self, folder_path, sorter_name):
         """Check if the PDF output file exists and is open by another process."""
@@ -1148,7 +1063,6 @@ class PipelineGUI(QMainWindow):
         Returns a dict of params, or None if validation fails.
         """
         try:
-            self._update_sorter_params_from_form()
             folder_path = self.folder_edit.text().strip()
             use_trigger = self.use_trigger_cb.isChecked()
             sorter_name = self.sorter_combo.currentText().strip()
